@@ -10,6 +10,7 @@ import (
 	"math"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/efficientgo/core/errors"
@@ -45,11 +46,6 @@ type Opts struct {
 	// DisableFallback enables mode where engine returns error if some expression of feature is not yet implemented
 	// in the new engine, instead of falling back to prometheus engine.
 	DisableFallback bool
-
-	// DebugWriter specifies output for debug (multi-line) information meant for humans debugging the engine.
-	// If nil, nothing will be printed.
-	// NOTE: Users will not check the errors, debug writing is best effort.
-	DebugWriter io.Writer
 }
 
 func New(opts Opts) v1.QueryEngine {
@@ -70,7 +66,6 @@ func New(opts Opts) v1.QueryEngine {
 			}, []string{"fallback"},
 		),
 
-		debugWriter:       opts.DebugWriter,
 		disableFallback:   opts.DisableFallback,
 		disableOptimizers: opts.DisableOptimizers,
 		logger:            opts.Logger,
@@ -82,7 +77,6 @@ type compatibilityEngine struct {
 	prom    *promql.Engine
 	queries *prometheus.CounterVec
 
-	debugWriter       io.Writer
 	disableFallback   bool
 	disableOptimizers bool
 	logger            log.Logger
@@ -101,10 +95,10 @@ func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.
 
 	lplan := logicalplan.New(expr, ts, ts)
 	if !e.disableOptimizers {
-		lplan = lplan.Optimize(logicalplan.DefaultOptimizers)
+		lplan.Optimize(logicalplan.DefaultOptimizers...)
 	}
 
-	exec, err := execution.New(lplan.Expr(), q, ts, ts, 0, e.lookbackDelta)
+	exec, err := execution.New(lplan, q, ts, ts, 0, e.lookbackDelta)
 	if e.triggerFallback(err) {
 		e.queries.WithLabelValues("true").Inc()
 		return e.prom.NewInstantQuery(q, opts, qs, ts)
@@ -114,12 +108,8 @@ func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.
 		return nil, err
 	}
 
-	if e.debugWriter != nil {
-		explain(e.debugWriter, exec, "", "")
-	}
-
 	return &compatibilityQuery{
-		Query:  &Query{exec: exec},
+		Query:  &Query{execPlan: exec},
 		engine: e,
 		expr:   expr,
 		ts:     ts,
@@ -140,10 +130,10 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 
 	lplan := logicalplan.New(expr, start, end)
 	if !e.disableOptimizers {
-		lplan = lplan.Optimize(logicalplan.DefaultOptimizers)
+		lplan.Optimize(logicalplan.DefaultOptimizers...)
 	}
 
-	exec, err := execution.New(lplan.Expr(), q, start, end, step, e.lookbackDelta)
+	exec, err := execution.New(lplan, q, start, end, step, e.lookbackDelta)
 	if e.triggerFallback(err) {
 		e.queries.WithLabelValues("true").Inc()
 		return e.prom.NewRangeQuery(q, opts, qs, start, end, step)
@@ -153,26 +143,38 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 		return nil, err
 	}
 
-	if e.debugWriter != nil {
-		explain(e.debugWriter, exec, "", "")
-	}
-
 	return &compatibilityQuery{
-		Query:  &Query{exec: exec},
+		Query:  &Query{execPlan: exec},
 		engine: e,
 		expr:   expr,
 		t:      RangeQuery,
 	}, nil
 }
 
-type Query struct {
-	exec model.VectorOperator
+type Debuggable interface {
+	Explain() string
 }
 
-// Explain returns human-readable explanation of the created executor.
+type Query struct {
+	execPlan execution.Plan
+}
+
+// Explain returns human-readable explanation of the created execution plan.
 func (q *Query) Explain() string {
-	// TODO(bwplotka): Explain plan and steps.
-	return "not implemented"
+	str := strings.Builder{}
+	str.WriteString("EXPLAIN:\n")
+	opts := q.execPlan.OptimizationsApplied()
+	if len(opts) > 0 {
+		str.WriteString("PromQL execution plan before optimization:\n")
+		explain(&str, q.execPlan.PreOptimizationOperator(), "", "")
+		for _, o := range opts {
+			str.WriteString(o)
+		}
+	}
+
+	str.WriteString("Final PromQL execution plan:\n")
+	explain(&str, q.execPlan.Operator(), "", "")
+	return str.String()
 }
 
 func (q *Query) Profile() {
@@ -201,7 +203,8 @@ func (q *compatibilityQuery) Exec(ctx context.Context) (ret *promql.Result) {
 	defer cancel()
 	q.cancel = cancel
 
-	resultSeries, err := q.Query.exec.Series(ctx)
+	op := q.Query.execPlan.Operator()
+	resultSeries, err := op.Series(ctx)
 	if err != nil {
 		return newErrResult(ret, err)
 	}
@@ -216,7 +219,7 @@ loop:
 		case <-ctx.Done():
 			return newErrResult(ret, ctx.Err())
 		default:
-			r, err := q.Query.exec.Next(ctx)
+			r, err := op.Next(ctx)
 			if err != nil {
 				return newErrResult(ret, err)
 			}
@@ -241,9 +244,9 @@ loop:
 							V: vector.Samples[i],
 						})
 					}
-					q.Query.exec.GetPool().PutStepVector(vector)
+					op.GetPool().PutStepVector(vector)
 				}
-				q.Query.exec.GetPool().PutVectors(r)
+				op.GetPool().PutVectors(r)
 				continue
 			}
 
@@ -257,9 +260,9 @@ loop:
 						V: vector.Samples[i],
 					})
 				}
-				q.Query.exec.GetPool().PutStepVector(vector)
+				op.GetPool().PutStepVector(vector)
 			}
-			q.Query.exec.GetPool().PutVectors(r)
+			op.GetPool().PutVectors(r)
 		}
 	}
 
@@ -372,11 +375,6 @@ func explain(w io.Writer, o model.VectorOperator, indent, indentNext string) {
 		return
 	}
 
-	if me == "[*CancellableOperator]" {
-		_, _ = w.Write([]byte(": "))
-		explain(w, next[0], "", indentNext)
-		return
-	}
 	_, _ = w.Write([]byte(":\n"))
 
 	for i, n := range next {

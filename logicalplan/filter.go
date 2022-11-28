@@ -19,7 +19,7 @@ func (f FilteredSelector) String() string {
 	return fmt.Sprintf("filter(%s, %s)", f.Filters, f.VectorSelector.String())
 }
 
-func (f FilteredSelector) Pretty(level int) string { return f.String() }
+func (f FilteredSelector) Pretty(int) string { return f.String() }
 
 func (f FilteredSelector) PositionRange() parser.PositionRange { return parser.PositionRange{} }
 

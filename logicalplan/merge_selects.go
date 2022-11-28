@@ -4,6 +4,8 @@
 package logicalplan
 
 import (
+	"strings"
+
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 )
@@ -19,11 +21,10 @@ import (
 // and apply an additional filter for {c="d"}.
 type MergeSelectsOptimizer struct{}
 
-func (m MergeSelectsOptimizer) Optimize(expr parser.Expr) parser.Expr {
+func (m MergeSelectsOptimizer) Optimize(expr parser.Expr, l *Log) parser.Expr {
 	heap := make(matcherHeap)
 	extractSelectors(heap, expr)
-	replaceMatchers(heap, &expr)
-
+	replaceMatchers(heap, &expr, l)
 	return expr
 }
 
@@ -42,7 +43,7 @@ func extractSelectors(selectors matcherHeap, expr parser.Expr) {
 	})
 }
 
-func replaceMatchers(selectors matcherHeap, expr *parser.Expr) {
+func replaceMatchers(selectors matcherHeap, expr *parser.Expr, log *Log) {
 	traverse(expr, func(node *parser.Expr) {
 		e, ok := (*node).(*parser.VectorSelector)
 		if !ok {
@@ -75,7 +76,10 @@ func replaceMatchers(selectors matcherHeap, expr *parser.Expr) {
 					}
 				}
 			}
+
+			log.Addf("MergeSelectsOptimizer: replacing %v with FilteredSelector{%v} and %v", sprintfMatchers(e.LabelMatchers), sprintfMatchers(filters), sprintfMatchers(replacement))
 			e.LabelMatchers = replacement
+
 			*node = &FilteredSelector{
 				Filters:        filters,
 				VectorSelector: e,
@@ -83,6 +87,14 @@ func replaceMatchers(selectors matcherHeap, expr *parser.Expr) {
 			return
 		}
 	})
+}
+
+func sprintfMatchers(ms []*labels.Matcher) string {
+	b := strings.Builder{}
+	for _, m := range ms {
+		b.WriteString(m.String())
+	}
+	return b.String()
 }
 
 func dropMatcher(matcherName string, originalMatchers []*labels.Matcher) []*labels.Matcher {

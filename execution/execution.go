@@ -43,9 +43,36 @@ import (
 
 const stepsBatch = 10
 
-// New creates new physical query execution for a given query expression which represents logical plan.
-// TODO(bwplotka): Add definition (could be parameters for each execution operator) we can optimize - it would represent physical plan.
-func New(expr parser.Expr, queryable storage.Queryable, mint, maxt time.Time, step, lookbackDelta time.Duration) (model.VectorOperator, error) {
+type Plan interface {
+	OptimizationsApplied() []string
+
+	PreOptimizationOperator() model.VectorOperator
+	Operator() model.VectorOperator
+}
+
+type plan struct {
+	lplan logicalplan.Plan
+	// TODO(bwplotka): Add definition (could be parameters for each exec operator) we can optimize - it would represent physical plan.
+	exec model.VectorOperator
+
+	preOptOperator func() model.VectorOperator
+}
+
+func (p *plan) OptimizationsApplied() []string {
+	// TODO(bwplotka): Add physical phase optimizations too.
+	return p.lplan.OptimizationsApplied()
+}
+
+func (p *plan) PreOptimizationOperator() model.VectorOperator {
+	return p.preOptOperator()
+}
+
+func (p *plan) Operator() model.VectorOperator {
+	return p.exec
+}
+
+// New creates new physical query exec for a given query expression which represents logical plan.
+func New(lplan logicalplan.Plan, queryable storage.Queryable, mint, maxt time.Time, step, lookbackDelta time.Duration) (Plan, error) {
 	opts := &query.Options{
 		Start:         mint,
 		End:           maxt,
@@ -60,7 +87,19 @@ func New(expr parser.Expr, queryable storage.Queryable, mint, maxt time.Time, st
 		// TODO(fpetkovski): Adjust the step for sub-queries once they are supported.
 		Step: step.Milliseconds(),
 	}
-	return newOperator(expr, selectorPool, opts, hints)
+	p := &plan{}
+
+	exec, err := newOperator(lplan.Expr(), selectorPool, opts, hints)
+	if err != nil {
+		return nil, err
+	}
+	p.exec = exec
+	p.lplan = lplan
+	p.preOptOperator = func() model.VectorOperator {
+		exec, _ := newOperator(lplan.PreOptimizationExpr(), selectorPool, opts, hints)
+		return exec
+	}
+	return p, nil
 }
 
 func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints) (model.VectorOperator, error) {

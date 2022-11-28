@@ -16,14 +16,14 @@ import (
 var sep = []byte{'\xff'}
 
 type SelectorPool struct {
-	selectors map[uint64]*seriesSelector
+	selectors map[uint64]SeriesSelector
 
 	queryable storage.Queryable
 }
 
 func NewSelectorPool(queryable storage.Queryable) *SelectorPool {
 	return &SelectorPool{
-		selectors: make(map[uint64]*seriesSelector),
+		selectors: make(map[uint64]SeriesSelector),
 		queryable: queryable,
 	}
 }

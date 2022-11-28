@@ -75,7 +75,7 @@ func NewVectorSelector(
 }
 
 func (o *vectorSelector) Explain() (me string, next []model.VectorOperator) {
-	return fmt.Sprintf("[*vectorSelector] {%v} %v mod %v", o.storage.Matchers(), o.shard, o.numShards), nil
+	return fmt.Sprintf("[*vectorSelector] %v mod %v: %v", o.shard, o.numShards, o.storage.Explain()), nil
 }
 
 func (o *vectorSelector) Series(ctx context.Context) ([]labels.Labels, error) {

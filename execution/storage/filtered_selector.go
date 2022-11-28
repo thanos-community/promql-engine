@@ -5,28 +5,33 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/prometheus/prometheus/model/labels"
 )
 
 type filteredSelector struct {
-	selector *seriesSelector
+	selector SeriesSelector
 	filter   Filter
 
 	once   sync.Once
 	series []SignedSeries
 }
 
-func NewFilteredSelector(selector *seriesSelector, filter Filter) SeriesSelector {
+func NewFilteredSelector(selector SeriesSelector, filter Filter) SeriesSelector {
 	return &filteredSelector{
 		selector: selector,
 		filter:   filter,
 	}
 }
 
+func (f *filteredSelector) Explain() string {
+	return fmt.Sprintf("[*filteredSelector] {%v}: %v", f.filter.Matchers(), f.selector.Explain())
+}
+
 func (f *filteredSelector) Matchers() []*labels.Matcher {
-	return append(f.selector.matchers, f.filter.Matchers()...)
+	return append(f.selector.Matchers(), f.filter.Matchers()...)
 }
 
 func (f *filteredSelector) GetSeries(ctx context.Context, shard, numShards int) ([]SignedSeries, error) {

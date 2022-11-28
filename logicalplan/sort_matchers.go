@@ -14,16 +14,21 @@ import (
 // can rely on this property.
 type SortMatchers struct{}
 
-func (m SortMatchers) Optimize(expr parser.Expr) parser.Expr {
+func (m SortMatchers) Optimize(expr parser.Expr, l *Log) parser.Expr {
 	traverse(&expr, func(node *parser.Expr) {
 		e, ok := (*node).(*parser.VectorSelector)
 		if !ok {
 			return
 		}
 
-		sort.Slice(e.LabelMatchers, func(i, j int) bool {
+		if !sort.SliceIsSorted(e.LabelMatchers, func(i, j int) bool {
 			return e.LabelMatchers[i].Name < e.LabelMatchers[j].Name
-		})
+		}) {
+			l.Addf("SortMatchers: sorting matchers for %v", e.String())
+			sort.Slice(e.LabelMatchers, func(i, j int) bool {
+				return e.LabelMatchers[i].Name < e.LabelMatchers[j].Name
+			})
+		}
 	})
 	return expr
 }

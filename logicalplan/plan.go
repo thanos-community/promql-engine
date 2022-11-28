@@ -4,6 +4,7 @@
 package logicalplan
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/prometheus/prometheus/promql"
@@ -16,16 +17,21 @@ var DefaultOptimizers = []Optimizer{
 }
 
 type Plan interface {
-	Optimize([]Optimizer) Plan
+	Optimize(...Optimizer)
+	OptimizationsApplied() []string
+
+	PreOptimizationExpr() parser.Expr
 	Expr() parser.Expr
 }
 
 type Optimizer interface {
-	Optimize(parser.Expr) parser.Expr
+	Optimize(parser.Expr, *Log) parser.Expr
 }
 
 type plan struct {
-	expr parser.Expr
+	initial string
+	expr    parser.Expr
+	optLog  *Log
 }
 
 func New(expr parser.Expr, mint, maxt time.Time) Plan {
@@ -33,16 +39,44 @@ func New(expr parser.Expr, mint, maxt time.Time) Plan {
 	setOffsetForAtModifier(mint.UnixMilli(), expr)
 
 	return &plan{
-		expr: expr,
+		initial: expr.String(),
+		expr:    expr,
+		optLog:  &Log{},
 	}
 }
 
-func (p *plan) Optimize(optimizers []Optimizer) Plan {
-	for _, o := range optimizers {
-		p.expr = o.Optimize(p.expr)
+func (p *plan) OptimizationsApplied() []string {
+	ret := make([]string, 0, len(p.optLog.Elems()))
+	for _, e := range p.optLog.Elems() {
+		ret = append(ret, fmt.Sprintf("Logical Optimization -> %v", e))
 	}
+	return ret
+}
 
-	return &plan{p.expr}
+type Log struct {
+	l []string
+}
+
+func (l *Log) Addf(tmpl string, args ...interface{}) {
+	if l == nil {
+		return
+	}
+	l.l = append(l.l, fmt.Sprintf(tmpl, args...))
+}
+
+func (l *Log) Elems() []string {
+	return l.l
+}
+
+func (p *plan) Optimize(optimizers ...Optimizer) {
+	for _, o := range optimizers {
+		p.expr = o.Optimize(p.expr, p.optLog)
+	}
+}
+
+func (p *plan) PreOptimizationExpr() parser.Expr {
+	e, _ := parser.ParseExpr(p.initial)
+	return e
 }
 
 func (p *plan) Expr() parser.Expr {

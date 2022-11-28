@@ -5,7 +5,9 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
@@ -14,6 +16,7 @@ import (
 type SeriesSelector interface {
 	GetSeries(ctx context.Context, shard, numShards int) ([]SignedSeries, error)
 	Matchers() []*labels.Matcher
+	Explain() string
 }
 
 type SignedSeries struct {
@@ -42,6 +45,10 @@ func newSeriesSelector(storage storage.Queryable, mint, maxt, step int64, matche
 		matchers: matchers,
 		hints:    hints,
 	}
+}
+
+func (o *seriesSelector) Explain() string {
+	return fmt.Sprintf("[*seriesSelector:(%p)] {%v} @%v[%v] ", o, o.matchers, o.mint, time.Millisecond*time.Duration(o.maxt-o.mint))
 }
 
 func (o *seriesSelector) Matchers() []*labels.Matcher {
